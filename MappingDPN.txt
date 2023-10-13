@@ -57,7 +57,7 @@ var add_RS_index = function(img){
   }
 
 //Select each grid for mapping DPN
-var geo =table.toList(308)
+var geo =roi.toList(308)
 var i=229
 var roi1=geo.get(i)
 var geo1 = ee.Feature(roi1).geometry()
