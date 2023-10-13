@@ -1,0 +1,112 @@
+//The 2°×2° grid
+var roi = table;
+
+function maskS2clouds(image) {
+  var qa = image.select('QA60'); 
+  var cloudBitMask = 1 << 10;
+  var cirrusBitMask = 1 << 11;
+    var mask = qa.bitwiseAnd(cloudBitMask).eq(0)
+          .and(qa.bitwiseAnd(cirrusBitMask).eq(0));
+  return image.updateMask(mask).divide(10000);
+}
+function scaleImage(image) {  
+  var time_start = image.get("system:time_start");  
+  image = image.multiply(0.0001);  
+  image = image.set("system:time_start", time_start);  
+  return image;  
+}  
+var add_RS_index = function(img){
+  
+  var ndvi = img.normalizedDifference(['B8', 'B4']).rename('NDVI').copyProperties(img,['system:time_start']);
+  var ndwi = img.normalizedDifference(['B3', 'B8']).rename('NDWI').copyProperties(img,['system:time_start']);
+  var evi = img.expression('2.5 * ((NIR - RED) / (NIR + 6 * RED - 7.5 * BLUE + 1))', 
+  {
+    'NIR': img.select('B8'),
+    'RED': img.select('B4'),
+    'BLUE': img.select('B2')
+  }).rename('EVI').copyProperties(img,['system:time_start']);
+
+  var rvi = img.expression('(NIR / RED)', 
+  {
+    'NIR': img.select('B8'),
+    'RED': img.select('B4')
+  }).rename('RVI').copyProperties(img,['system:time_start']);
+  var bsi = img.expression('((RED + SWIR1) - (NIR + BLUE)) / ((RED + SWIR1) + (NIR + BLUE)) ', 
+  {
+    'RED': img.select('B4'), 
+    'BLUE': img.select('B2'),
+    'NIR': img.select('B8'),
+    'SWIR1': img.select('B11'),
+
+  }).rename('BSI').copyProperties(img,['system:time_start']);
+  var ndbi = img.expression('((SWIR1 -NIR) / (NIR + SWIR1))', {
+    'SWIR1': img.select('B11'),
+    'NIR': img.select('B8'),
+  }).rename('NDBI').copyProperties(img,['system:time_start']);
+  var ndsi = img.expression('((GREEN -SWIR1) / (GREEN + SWIR1))', {
+    'SWIR1': img.select('B11'),
+    'GREEN': img.select('B3')
+  }).rename('NDSI').copyProperties(img,['system:time_start']);
+  var ibi = img.expression('(((2*SWIR1/(SWIR1+NIR))-((NIR/(NIR+RED))+(GREEN/(GREEN+SWIR1))))/ ((2*SWIR1/(SWIR1+NIR))+((NIR/(NIR+RED))+(GREEN/(GREEN+SWIR1)))))', {
+    'GREEN': img.select('B3'),
+    'NIR': img.select('B8'),
+    'SWIR1': img.select('B11'),
+    'RED': img.select('B4')
+  }).rename('IBI').copyProperties(img,['system:time_start']);
+  return img.addBands([ndvi, ndwi, evi, bsi,ndbi,ndsi,rvi,ibi]);
+  }
+
+//Select each grid for mapping DPN
+var geo =table.toList(308)
+var i=229
+var roi1=geo.get(i)
+var geo1 = ee.Feature(roi1).geometry()
+
+//table2 are the boundaries of Beijing, Shanghai, Chengdu, Guangzhou, and Zhengzhou
+var s2Col =ee.ImageCollection("COPERNICUS/S2_HARMONIZED")
+              .filterBounds(table2)
+              .filterDate("2020-01-01", "2020-12-31")
+              .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 10))
+              .map(maskS2clouds); 
+var s2Col1 =ee.ImageCollection("COPERNICUS/S2_HARMONIZED")
+              .filterBounds(geo1)
+              .filterDate("2018-11-27", "2019-1-30")
+              .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 10))
+              .map(maskS2clouds); 
+
+    var dataset = s2Col.map(add_RS_index);
+    var dataset1 = s2Col1.map(add_RS_index)
+    var bands = ["B4", "B3", "B2","B5","B6","B7","B8","B8A","B11","B12",'BSI','NDVI','NDWI','EVI','NDBI','RVI','NDSI','IBI'];
+    var s2Image = dataset.select(bands).median().clip(table2);
+    var s2Image1 = dataset1.select(bands).median().clip(geo1);
+
+//The dpn are the samples for DPN; table 3 are the samples for other land covers
+    var classdpn = dpn
+    var classNames = table3
+    var trainingdpn = s2Image.sampleRegions({
+  collection: classdpn,
+  properties: ['landcover'],
+  scale: 10,
+  tileScale:8
+    });
+
+    var trainingother = s2Image1.sampleRegions({
+    collection: classNames,
+    properties: ['landcover'],
+    scale: 10,
+    tileScale:8
+    });
+    var training = trainingdpn.merge(trainingother)
+    var classProperty = 'landcover';
+    var classifier = ee.Classifier.smileRandomForest({
+                  numberOfTrees: 500,
+                  variablesPerSplit: 4,
+  
+    })
+    .train({
+    inputProperties: bands,
+    features: training,
+    classProperty: 'landcover'});
+
+//Using a trained classifier to obtain DPN extraction results
+    var classified = s2Image1.classify(classifier);            
